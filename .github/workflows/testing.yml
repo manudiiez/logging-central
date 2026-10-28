@@ -44,12 +44,15 @@ jobs:
     name: integracion
     needs: tests
     runs-on: ubuntu-latest
+    # A nivel de job y no de step: `docker compose` interpola las variables en
+    # cualquier invocación, así que los pasos de diagnóstico y limpieza (`logs`,
+    # `down`) también la necesitan. Si falta, fallan y tapan el error real.
+    env:
+      GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
     steps:
       - uses: actions/checkout@v4
 
       - name: Levantar el stack
-        env:
-          GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
         run: docker compose up -d --build
 
       - name: Verificar la ingesta de punta a punta

@@ -46,8 +46,20 @@ except Exception:
 print(sum(len(r["values"]) for r in d.get("data", {}).get("result", [])))'
 }
 
-step "Loki responde"
-curl -sf "$LOKI/ready" >/dev/null || { echo "  x $LOKI/ready no responde. Levantá el stack: docker compose up -d"; exit 1; }
+step "Esperar a que Loki esté listo (hasta 90s)"
+# `docker compose up -d` devuelve cuando los contenedores arrancaron, no cuando Loki
+# terminó de inicializar: tarda unos 15s más. Sin esta espera el script falla si se lo
+# invoca inmediatamente después de levantar el stack, que es justo lo que hace CI.
+deadline=$(( $(date +%s) + 90 ))
+until curl -sf "$LOKI/ready" >/dev/null 2>&1; do
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "  x $LOKI/ready no responde después de 90s."
+    echo "    ¿Está levantado el stack? docker compose up -d"
+    echo "    Si lo está: docker compose logs loki"
+    exit 1
+  fi
+  sleep 2
+done
 ok "$LOKI/ready"
 
 step "Emitir logs de prueba (request.id=$RID)"
