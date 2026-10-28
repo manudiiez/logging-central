@@ -1,0 +1,38 @@
+# Staging (flujo-github): cada merge a `testing` valida la configuración del stack.
+#
+# A diferencia de los repos de aplicación, logging-central no publica una imagen propia:
+# el stack corre con las imágenes oficiales de Grafana Alloy, Loki y Grafana, y lo que
+# versiona este repo es el compose y sus configs. Por eso no hay job `image` ni tag
+# `:testing` en GHCR. Si en algún momento se agrega un servicio propio con Dockerfile
+# (por ejemplo un endpoint HTTP de ingesta para apps que no escriben a stdout), acá va
+# un job `image` con `needs: tests` siguiendo .claude/skills/flujo-github/references/ci.md.
+name: testing
+
+on:
+  push:
+    branches: [testing]
+  workflow_dispatch:
+
+concurrency:
+  group: testing
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Validar configuración
+        run: bash scripts/validate-config.sh
