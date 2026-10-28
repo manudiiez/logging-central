@@ -11,6 +11,26 @@ permissions:
   contents: read
 
 jobs:
+  # `config` no es un check requerido por los rulesets (esos son pr-title y
+  # branch-policy). Está acá para ver la configuración roja antes de mergear, no
+  # después. Para volverlo obligatorio hay que agregarlo a REQUIRED_CHECKS en
+  # .claude/skills/flujo-github/scripts/apply-rulesets.sh y reaplicar.
+  config:
+    name: config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Validar configuración
+        run: bash scripts/validate-config.sh
+
   pr-title:
     name: pr-title
     runs-on: ubuntu-latest

@@ -1,11 +1,9 @@
-# Staging (flujo-github): cada merge a `testing` valida la configuración del stack.
+# Staging (flujo-github): cada merge a `testing` valida la configuración, verifica la
+# ingesta de punta a punta levantando el stack, y publica las tres imágenes con el
+# tag :testing (+ :sha-<commit>).
 #
-# A diferencia de los repos de aplicación, logging-central no publica una imagen propia:
-# el stack corre con las imágenes oficiales de Grafana Alloy, Loki y Grafana, y lo que
-# versiona este repo es el compose y sus configs. Por eso no hay job `image` ni tag
-# `:testing` en GHCR. Si en algún momento se agrega un servicio propio con Dockerfile
-# (por ejemplo un endpoint HTTP de ingesta para apps que no escriben a stdout), acá va
-# un job `image` con `needs: tests` siguiendo .claude/skills/flujo-github/references/ci.md.
+# Son tres imágenes y no una porque el stack son tres servicios; cada una hornea su
+# configuración sobre la imagen oficial de Grafana correspondiente.
 name: testing
 
 on:
@@ -19,6 +17,11 @@ concurrency:
 
 permissions:
   contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  STAGING_TAG: testing
 
 jobs:
   tests:
@@ -36,3 +39,65 @@ jobs:
 
       - name: Validar configuración
         run: bash scripts/validate-config.sh
+
+  integracion:
+    name: integracion
+    needs: tests
+    runs-on: ubuntu-latest
+    # A nivel de job y no de step: `docker compose` interpola las variables en
+    # cualquier invocación, así que los pasos de diagnóstico y limpieza (`logs`,
+    # `down`) también la necesitan. Si falta, fallan y tapan el error real.
+    env:
+      GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Levantar el stack
+        run: docker compose up -d --build
+
+      - name: Verificar la ingesta de punta a punta
+        run: bash scripts/smoke-test.sh
+
+      - name: Logs del stack si algo falló
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Bajar el stack
+        if: always()
+        run: docker compose down -v
+
+  image:
+    name: image (${{ matrix.componente }})
+    needs: integracion
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        componente: [alloy, loki, grafana]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.componente }}
+          tags: |
+            type=raw,value=${{ env.STAGING_TAG }}
+            type=sha,prefix=sha-,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.componente }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.componente }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.componente }}

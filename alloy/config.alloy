@@ -1,0 +1,150 @@
+// Alloy: recoge los logs de los contenedores de este host y los manda a Loki.
+//
+// Las apps no mandan nada: escriben JSON a stdout y Alloy los lee del socket de Docker.
+// Para que un contenedor sea recogido tiene que llevar el label `logging=true`.
+//
+// Variables de entorno (las pone el compose, no están horneadas en la imagen):
+//   SERVICE_NAMESPACE  agrupa los servicios de un mismo producto (ej. nazar)
+//   ENVIRONMENT        production | testing | development
+
+logging {
+  level  = "warn"
+  format = "logfmt"
+}
+
+// ── Descubrimiento ────────────────────────────────────────────────────────────
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "15s"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Opt-in explícito: sin el label `logging=true` el contenedor se ignora.
+  rule {
+    source_labels = ["__meta_docker_container_label_logging"]
+    regex         = "true"
+    action        = "keep"
+  }
+
+  // Docker devuelve el nombre con una barra adelante: /nazar-api-1 -> nazar-api-1
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "container"
+  }
+
+  // service_name por defecto, para los contenedores que no emiten nuestro JSON
+  // (postgres, redis). Si el log trae `service.name`, el stage.labels de más abajo
+  // lo sobreescribe.
+  //
+  // Primero el nombre del contenedor, que siempre existe...
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service_name"
+    replacement   = "$1"
+  }
+
+  // ...y después el nombre del servicio en el compose, que es más estable (no lleva
+  // el sufijo de réplica). El regex `(.+)` no matchea si el label no está, así que
+  // en ese caso la regla no hace nada y queda el nombre del contenedor.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(.+)"
+    target_label  = "service_name"
+    replacement   = "$1"
+  }
+}
+
+// ── Recolección ───────────────────────────────────────────────────────────────
+
+loki.source.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.containers.output
+  forward_to       = [loki.process.contrato.receiver]
+  refresh_interval = "15s"
+}
+
+// ── Parseo del contrato de campos ─────────────────────────────────────────────
+//
+// Contrato: un objeto JSON por línea, claves planas con puntos (OpenTelemetry
+// semconv). La línea se reenvía intacta; lo de acá abajo solo extrae campos para
+// usarlos como labels, structured metadata y timestamp.
+
+loki.process "contrato" {
+  forward_to = [loki.write.default.receiver]
+
+  // Labels fijos del colector. Van primero para que, si el log trae los campos
+  // equivalentes, el stage.labels de abajo gane.
+  stage.static_labels {
+    values = {
+      service_namespace = sys.env("SERVICE_NAMESPACE"),
+      environment       = sys.env("ENVIRONMENT"),
+    }
+  }
+
+  // Las claves con punto necesitan ir entrecomilladas en JMESPath.
+  stage.json {
+    expressions = {
+      ts                = "timestamp",
+      level             = "level",
+      event_name        = "\"event.name\"",
+      logger            = "logger",
+      service_name      = "\"service.name\"",
+      service_namespace = "\"service.namespace\"",
+      service_version   = "\"service.version\"",
+      environment       = "\"deployment.environment.name\"",
+      request_id        = "\"request.id\"",
+      trace_id          = "trace_id",
+      user_id           = "\"user.id\"",
+      error_type        = "\"error.type\"",
+      status_code       = "\"http.response.status_code\"",
+    }
+  }
+
+  // Timestamp de la app, no el que le puso Docker al leer la línea.
+  // Si el campo falta o no parsea, Alloy conserva el de Docker.
+  stage.timestamp {
+    source      = "ts"
+    format      = "RFC3339Nano"
+    action_on_failure = "skip"
+  }
+
+  // Solo estos cuatro se indexan. Son estáticos y acotados por el tamaño del
+  // despliegue. Agregar acá algo de alta cardinalidad (request_id, user_id, ruta)
+  // multiplica los streams y degrada Loki.
+  stage.labels {
+    values = {
+      service_name      = "",
+      service_namespace = "",
+      environment       = "",
+    }
+  }
+
+  // Lo consultable sin indexar. Se filtra con `| level="error"` a velocidad de
+  // structured metadata, sin crear un stream por valor.
+  stage.structured_metadata {
+    values = {
+      level           = "",
+      event_name      = "",
+      logger          = "",
+      service_version = "",
+      request_id      = "",
+      trace_id        = "",
+      user_id         = "",
+      error_type      = "",
+      status_code     = "",
+    }
+  }
+}
+
+// ── Escritura ─────────────────────────────────────────────────────────────────
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
