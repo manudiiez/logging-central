@@ -1,0 +1,63 @@
+# Stack para el VPS. Idéntico al local salvo que usa las imágenes ya construidas
+# por CI en vez de compilar: el deploy y el rollback son cambiar STACK_VERSION.
+#
+# En Dokploy: STACK_VERSION=v1.2.3 (o :testing para staging) + GRAFANA_ADMIN_PASSWORD.
+
+name: logging-central
+
+services:
+  loki:
+    image: ghcr.io/manudiiez/logging-central/loki:${STACK_VERSION:?falta STACK_VERSION}
+    restart: unless-stopped
+    volumes:
+      - loki-data:/loki
+    labels:
+      logging: "true"
+    # Sin healthcheck ni puerto publicado: la imagen de Loki es distroless (no tiene
+    # shell ni cliente HTTP) y solo Alloy y Grafana necesitan alcanzarla, por la red
+    # interna del stack.
+
+  alloy:
+    image: ghcr.io/manudiiez/logging-central/alloy:${STACK_VERSION:?falta STACK_VERSION}
+    restart: unless-stopped
+    environment:
+      SERVICE_NAMESPACE: ${SERVICE_NAMESPACE:-nazar}
+      ENVIRONMENT: ${ENVIRONMENT:?falta ENVIRONMENT}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      loki:
+        condition: service_started
+
+  grafana:
+    image: ghcr.io/manudiiez/logging-central/grafana:${STACK_VERSION:?falta STACK_VERSION}
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?falta GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:?falta GRAFANA_ROOT_URL}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    labels:
+      logging: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health | grep -q '\"database\": *\"ok\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      loki:
+        condition: service_started
+
+volumes:
+  loki-data:
+  alloy-data:
+  grafana-data:

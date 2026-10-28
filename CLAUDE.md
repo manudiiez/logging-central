@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 lugar consultable. **No es una aplicación: es un repo de infraestructura.** Lo que versiona son un
 `docker compose` y las configuraciones de los servicios que corren en el VPS.
 
-Arquitectura decidida (todavía no implementada, ver "Estado"):
+Arquitectura:
 
 ```
 contenedores de cada app ──stdout JSON──▶ Grafana Alloy ──push──▶ Loki ──consulta──▶ Grafana
@@ -36,22 +36,43 @@ Decisiones que no se deducen leyendo un archivo:
 
 ## Estado
 
-Infraestructura del repo lista (flujo de GitHub, CI, hooks). **Todavía no existe el stack**: faltan
-el `docker compose`, las configs de Alloy / Loki / Grafana, los dashboards y la política de
-retención. Tampoco está decidido cómo se despliega al VPS (si Dokploy toma el repo o si un workflow
-entra por SSH).
+El stack está implementado y verificado localmente: `docker compose up -d --build` lo levanta y
+`bash scripts/smoke-test.sh` comprueba la ingesta de punta a punta. **Todavía no está desplegado en
+el VPS**: falta crear la aplicación en Dokploy con `docker-compose.production.yml` y sacar la primera
+versión (`vX.Y.Z`), y falta agregarle el label `logging: "true"` a los servicios de las otras apps.
 
-Mientras falte eso, no asumas estructura de carpetas más allá de la que ya existe: confirmala con el
-usuario antes de crear scaffolding.
+Pendiente, deliberadamente fuera del alcance de la primera versión:
+
+- Alertas en Grafana: se agregan cuando haya tráfico real con el que calibrar umbrales.
+- Métricas y trazas. Esto es solo logs.
 
 ## Comandos
 
-- Validar configuración (lo que corre CI): `bash scripts/validate-config.sh`
-  Valida la sintaxis de todos los YAML trackeados y, cuando exista, el `docker compose`. Requiere
-  PyYAML para la parte de YAML (`python3 -m pip install pyyaml`); sin él saltea ese paso con un aviso.
-- No hay linter ni suite de tests aparte: en un repo de configuración, el equivalente es ese script.
-  Cuando se agreguen las configs de Loki y Alloy, sumarles su validación nativa ahí mismo (hay un
-  comentario `PENDIENTE` en el script con los comandos).
+- Validar la configuración (lo que corre CI): `bash scripts/validate-config.sh`
+  Valida los YAML trackeados, los dos compose, los dashboards de Grafana, `alloy validate` y
+  `loki -verify-config`. Los validadores nativos usan la misma versión de imagen que cada
+  Dockerfile, así que no hay deriva entre lo que se valida y lo que corre. Sin Docker saltea esa
+  parte; sin PyYAML saltea la de YAML.
+- Verificar la ingesta de punta a punta: `bash scripts/smoke-test.sh` (con el stack levantado).
+  Emite logs de prueba desde un contenedor y comprueba los labels, los filtros por structured
+  metadata, el timestamp y que una línea no-JSON no rompa el pipeline.
+- Levantar el stack local: `docker compose up -d --build` (necesita `.env`, ver `.env.example`).
+- No hay linter ni tests unitarios: en un repo de configuración, el equivalente son esos dos scripts.
+
+## Al trabajar en este repo
+
+- **Las versiones de las imágenes viven en los Dockerfiles** (`alloy/`, `loki/`, `grafana/`), que
+  son la única fuente. `scripts/validate-config.sh` las lee de ahí; no las repitas en otro lado.
+- **No agregues labels a Loki sin pensar la cardinalidad.** Si un campo puede tomar más de unos
+  pocos valores, o crece con el tráfico, va como structured metadata en `alloy/config.alloy`, no
+  como label. El smoke test falla si `request_id`, `user_id`, `level`, `event_name` o `trace_id`
+  aparecen como labels.
+- **Las imágenes de Loki y Alloy no tienen shell.** La de Loki es distroless (solo `/usr/bin/loki`):
+  no se le puede poner un healthcheck de compose ni entrar con `exec sh`. La de Grafana sí.
+- **Los secretos no se hornean.** `GRAFANA_ADMIN_PASSWORD` y cualquier credencial van por variable
+  de entorno en Dokploy. Las imágenes son públicas en GHCR.
+- Después de tocar `alloy/config.alloy` o `loki/loki.yml`, corré `scripts/validate-config.sh`; si
+  tocaste el pipeline de parseo, corré además el smoke test con el stack levantado.
 
 <!-- flujo-github:inicio -->
 ## Flujo de trabajo Git / GitHub
@@ -66,16 +87,16 @@ Lo esencial:
 - Commits y títulos de PR en Conventional Commits, descripción en español e imperativo.
 - Al empezar: `git config core.hooksPath` debe ser `.githooks`.
 
-A diferencia de los repos de aplicación, acá **ningún workflow publica imágenes**: el stack usa las imágenes oficiales de Grafana y lo que se versiona es la configuración. `testing.yml` y `release.yml` validan; el tag `vX.Y.Z` identifica la versión del compose que se despliega.
+Particularidades de este repo: se publican **tres** imágenes (`alloy`, `loki`, `grafana`) en vez de una, porque el stack son tres servicios y cada imagen hornea su configuración sobre la oficial de Grafana. `testing.yml` además levanta el stack y corre el smoke test antes de publicar. El job `config` de `pr-checks.yml` valida la configuración en cada PR, pero **no** es un check requerido por los rulesets: para volverlo obligatorio hay que agregarlo a `REQUIRED_CHECKS` en `.claude/skills/flujo-github/scripts/apply-rulesets.sh` y reaplicar.
 
 ### Scopes de este repo
 
-`compose`, `alloy`, `loki`, `grafana`, `alerts`, `retencion`, `scripts`, `ci`, `docs`, `repo`.
+`compose`, `alloy`, `loki`, `grafana`, `dashboards`, `retencion`, `scripts`, `ci`, `docs`, `repo`.
 
 Ej.: `feat(alloy): descubrir contenedores por label logging=true`, `fix(loki): corregir ventana de retención`.
 
 ### Comandos
 
-- Tests: `bash scripts/validate-config.sh`
-- Lint: no hay; la validación va en el mismo script.
+- Tests: `bash scripts/validate-config.sh` y, con el stack levantado, `bash scripts/smoke-test.sh`
+- Lint: no hay; la validación va en esos scripts.
 <!-- flujo-github:fin -->
