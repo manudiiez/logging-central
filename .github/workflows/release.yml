@@ -1,0 +1,44 @@
+# Versiones (flujo-github): un tag vX.Y.Z sobre main marca una versión liberable del stack.
+#
+# Este repo no construye imágenes (ver el encabezado de testing.yml): el tag identifica la
+# versión del compose y de las configs que se despliegan en el VPS. Qué versión corre en
+# producción lo decide el usuario en el servidor, apuntando al tag.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validar formato del tag y que esté en main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tag inválido: $TAG (esperado vX.Y.Z)"; exit 1; }
+          git fetch origin main --quiet
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::El tag $TAG no apunta a un commit de main. Las versiones solo se crean sobre main."
+            exit 1
+          fi
+          echo "OK: $TAG está en main"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Validar configuración
+        run: bash scripts/validate-config.sh

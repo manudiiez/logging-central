@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Bash(gh pr merge:*)",
+      "Bash(gh release delete:*)",
+      "Bash(git commit --no-verify:*)",
+      "Bash(git commit -n:*)",
+      "Bash(git push --delete:*)",
+      "Bash(git push --no-verify:*)",
+      "Bash(git push origin --delete:*)",
+      "Bash(git push origin develop:*)",
+      "Bash(git push origin main:*)",
+      "Bash(git push origin testing:*)",
+      "Bash(git tag -d:*)"
+    ]
+  }
+}
