@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: logging-central
+    orgId: 1
+    folder: Logging
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      # No puede ser /var/lib/grafana/dashboards: ahí va montado el volumen con la
+      # base de datos de Grafana y taparía los dashboards horneados en la imagen.
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false
