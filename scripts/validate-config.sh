@@ -90,15 +90,20 @@ if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
 fi
 
 step "docker compose"
-if docker compose -f docker-compose.yml config -q; then ok "docker-compose.yml"; else bad "docker-compose.yml"; fi
-# El de producción exige variables a propósito; se le pasan valores ficticios solo
-# para validar la estructura.
-if STACK_VERSION=v0.0.0 ENVIRONMENT=ci GRAFANA_ADMIN_PASSWORD=ci GRAFANA_ROOT_URL=http://ci \
-   docker compose -f docker-compose.production.yml --env-file /dev/null config -q; then
-  ok "docker-compose.production.yml"
-else
-  bad "docker-compose.production.yml"
-fi
+# Los dos compose exigen variables a propósito (GRAFANA_ADMIN_PASSWORD y, en
+# producción, STACK_VERSION). Se les pasan valores ficticios y `--env-file /dev/null`
+# para validar solo la estructura: así el resultado no depende de que quien lo corra
+# tenga un .env, y en CI da lo mismo que en local.
+compose_vars() {
+  env STACK_VERSION=v0.0.0 ENVIRONMENT=ci GRAFANA_ADMIN_PASSWORD=ci GRAFANA_ROOT_URL=http://ci "$@"
+}
+for f in docker-compose.yml docker-compose.production.yml; do
+  if compose_vars docker compose -f "$f" --env-file /dev/null config -q; then
+    ok "$f"
+  else
+    bad "$f"
+  fi
+done
 
 step "Configuración de Alloy"
 if [ -f alloy/config.alloy ]; then
